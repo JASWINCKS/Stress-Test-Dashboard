@@ -52,14 +52,6 @@ st.markdown("""
         color: #00cc88;
         font-weight: bold;
     }
-    .warning-box {
-        background-color: #fff3cd;
-        border: 1px solid #ffeaa7;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1rem 0;
-        color: #856404;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,10 +68,6 @@ if 'cpu_progress' not in st.session_state:
     st.session_state.cpu_progress = 0
 if 'gpu_progress' not in st.session_state:
     st.session_state.gpu_progress = 0
-if 'gpu_stop_requested' not in st.session_state:
-    st.session_state.gpu_stop_requested = False
-if 'cpu_stop_requested' not in st.session_state:
-    st.session_state.cpu_stop_requested = False
 
 # CPU Stress Test Functions (Modified from m.py)
 def pixels(y, n, abs_func):
@@ -139,15 +127,11 @@ def mandelbrot_cpu_test(n):
         for row in rows:
             pass  # Just compute, don't write to stdout
 
-def cpu_stress_test(iterations, matrix_size, progress_callback=None, early_stop_check=None):
-    """CPU stress test using Mandelbrot set calculation with early stopping"""
+def cpu_stress_test(iterations, matrix_size, progress_callback=None):
+    """CPU stress test using Mandelbrot set calculation"""
     results = []
     
     for i in range(iterations):
-        # Check for early stopping
-        if early_stop_check and early_stop_check():
-            break
-            
         start_time = time.time()
         mandelbrot_cpu_test(matrix_size)
         end_time = time.time()
@@ -164,8 +148,8 @@ def cpu_stress_test(iterations, matrix_size, progress_callback=None, early_stop_
     
     return results
 
-def gpu_stress_test(iterations, progress_callback=None, early_stop_check=None):
-    """Optimized GPU stress test with better memory management and performance"""
+def gpu_stress_test(iterations, progress_callback=None):
+    """GPU stress test using matrix multiplication"""
     if not TORCH_AVAILABLE:
         return None, "PyTorch not available"
     
@@ -176,148 +160,38 @@ def gpu_stress_test(iterations, progress_callback=None, early_stop_check=None):
     device_name = torch.cuda.get_device_name(device)
     total_memory = torch.cuda.get_device_properties(device).total_memory
     
-    # More conservative memory usage (reduced from 0.8 to 0.6)
-    factor = 0.6  # Use 60% of GPU memory instead of 80%
+    # Calculate matrix size
+    factor = 0.8
     matrix_size = int((total_memory * factor / 4) ** 0.5)
     
-    # Clamp matrix size to reasonable bounds
-    matrix_size = min(matrix_size, 8192)  # Max 8192x8192
-    matrix_size = max(matrix_size, 1024)  # Min 1024x1024
+    # Initialize matrices
+    a = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float32)
+    b = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float32)
     
-    try:
-        # Clear GPU cache before starting
-        torch.cuda.empty_cache()
-        
-        # Pre-allocate matrices once (major optimization)
-        a = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float32)
-        b = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float32)
-        c = torch.zeros((matrix_size, matrix_size), device=device, dtype=torch.float32)  # Pre-allocate result
-        
-        results = []
-        
-        # Batch processing for better performance
-        batch_size = min(10, iterations)  # Process in batches of 10 or less
-        
-        for batch_start in range(0, iterations, batch_size):
-            batch_end = min(batch_start + batch_size, iterations)
-            batch_results = []
-            
-            # Process batch
-            for i in range(batch_start, batch_end):
-                # Check for early stopping
-                if early_stop_check and early_stop_check():
-                    results.extend(batch_results)
-                    return results, f"{device_name} (stopped early)"
-                
-                start_time = time.time()
-                
-                # Use torch.mm with out parameter to avoid new memory allocation
-                torch.mm(a, b, out=c)
-                torch.cuda.synchronize()  # Ensure computation is complete
-                
-                end_time = time.time()
-                
-                execution_time = end_time - start_time
-                memory_allocated = torch.cuda.memory_allocated(device) / (1024 ** 2)
-                memory_reserved = torch.cuda.memory_reserved(device) / (1024 ** 2)
-                
-                batch_results.append({
-                    'iteration': i + 1,
-                    'time_seconds': execution_time,
-                    'memory_allocated_mb': memory_allocated,
-                    'memory_reserved_mb': memory_reserved,
-                    'matrix_size': matrix_size
-                })
-                
-                if progress_callback:
-                    progress_callback(i + 1, iterations, execution_time, memory_allocated)
-            
-            results.extend(batch_results)
-            
-            # Optional: Small delay between batches to prevent overheating
-            if batch_end < iterations:
-                time.sleep(0.01)  # 10ms pause between batches
-        
-        return results, device_name
-        
-    except torch.cuda.OutOfMemoryError:
-        # Handle OOM gracefully
-        torch.cuda.empty_cache()
-        return None, f"GPU Out of Memory - try reducing matrix size or iterations"
-    except Exception as e:
-        torch.cuda.empty_cache()
-        return None, f"GPU test failed: {str(e)}"
-    finally:
-        # Always clean up
-        torch.cuda.empty_cache()
-
-def gpu_stress_test_lightweight(iterations, progress_callback=None, early_stop_check=None):
-    """Lightweight GPU stress test for very high iteration counts"""
-    if not TORCH_AVAILABLE:
-        return None, "PyTorch not available"
+    results = []
     
-    if not torch.cuda.is_available():
-        return None, "No GPU available"
+    for i in range(iterations):
+        start_time = time.time()
+        c = torch.mm(a, b)
+        torch.cuda.synchronize()  # Ensure computation is complete
+        end_time = time.time()
+        
+        execution_time = end_time - start_time
+        memory_allocated = torch.cuda.memory_allocated(device) / (1024 ** 2)
+        memory_reserved = torch.cuda.memory_reserved(device) / (1024 ** 2)
+        
+        results.append({
+            'iteration': i + 1,
+            'time_seconds': execution_time,
+            'memory_allocated_mb': memory_allocated,
+            'memory_reserved_mb': memory_reserved,
+            'matrix_size': matrix_size
+        })
+        
+        if progress_callback:
+            progress_callback(i + 1, iterations, execution_time, memory_allocated)
     
-    device = torch.device("cuda")
-    device_name = torch.cuda.get_device_name(device)
-    
-    # Much smaller matrices for high iteration testing
-    matrix_size = 2048  # Fixed smaller size
-    
-    try:
-        torch.cuda.empty_cache()
-        
-        # Smaller pre-allocated matrices
-        a = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float16)  # Use half precision
-        b = torch.randn((matrix_size, matrix_size), device=device, dtype=torch.float16)
-        c = torch.zeros((matrix_size, matrix_size), device=device, dtype=torch.float16)
-        
-        results = []
-        
-        # Process in larger batches for efficiency
-        batch_size = min(100, iterations)
-        update_frequency = max(1, iterations // 100)  # Update progress less frequently
-        
-        for batch_start in range(0, iterations, batch_size):
-            batch_end = min(batch_start + batch_size, iterations)
-            
-            for i in range(batch_start, batch_end):
-                if early_stop_check and early_stop_check():
-                    return results, f"{device_name} (stopped early)"
-                
-                start_time = time.perf_counter()  # More precise timing
-                torch.mm(a, b, out=c)
-                # Skip synchronize for better performance, only sync occasionally
-                if i % 50 == 0:  # Sync every 50 iterations
-                    torch.cuda.synchronize()
-                end_time = time.perf_counter()
-                
-                execution_time = end_time - start_time
-                
-                # Only collect detailed memory info occasionally to improve performance
-                if i % update_frequency == 0 or i == iterations - 1:
-                    memory_allocated = torch.cuda.memory_allocated(device) / (1024 ** 2)
-                    memory_reserved = torch.cuda.memory_reserved(device) / (1024 ** 2)
-                    
-                    results.append({
-                        'iteration': i + 1,
-                        'time_seconds': execution_time,
-                        'memory_allocated_mb': memory_allocated,
-                        'memory_reserved_mb': memory_reserved,
-                        'matrix_size': matrix_size
-                    })
-                    
-                    if progress_callback:
-                        progress_callback(i + 1, iterations, execution_time, memory_allocated)
-        
-        return results, device_name
-        
-    except Exception as e:
-        torch.cuda.empty_cache()
-        return None, f"Lightweight GPU test failed: {str(e)}"
-    finally:
-        torch.cuda.empty_cache()
+    return results, device_name
 
 # Streamlit UI
 st.title("🔥 System Stress Test Dashboard")
@@ -349,42 +223,20 @@ tab1, tab2, tab3 = st.tabs(["🖥️ CPU Stress Test", "🎮 GPU Stress Test", "
 with tab1:
     st.header("CPU Stress Test (Mandelbrot Set)")
     st.markdown("This test uses Mandelbrot set calculations to stress your CPU cores.")
-    
-    # Warning box
-    st.markdown("""
-    <div class="warning-box">
-        ⚠️ <strong>Performance Warning:</strong> High iteration counts or large matrix sizes can take significant time to complete. 
-        Start with default values and use the stop button if needed.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("**Note:** Dont Change the Iterations value from Default Untill you are sure about it")
+
     
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.subheader("Configuration")
         cpu_iterations = st.number_input("Number of Iterations", min_value=1, max_value=100, value=10, key="cpu_iter")
-        cpu_matrix_size = st.selectbox("Matrix Size (n×n)", [500, 1000, 1500, 2000, 2500, 5000, 10000, 16000], index=1, key="cpu_size")
+        cpu_matrix_size = st.selectbox("Matrix Size (n×n)", [500, 1000, 1500, 2000, 2500,5000,10000,16000], index=1, key="cpu_size")
         
-        # Estimated time calculation
-        est_time_per_iter = {500: 0.1, 1000: 0.5, 1500: 1.2, 2000: 2.1, 2500: 3.3, 5000: 13, 10000: 52, 16000: 134}
-        estimated_total_time = cpu_iterations * est_time_per_iter.get(cpu_matrix_size, 1)
-        st.info(f"Estimated time: ~{estimated_total_time:.1f}s ({estimated_total_time/60:.1f} min)")
-        
-        # Control buttons
-        col_start, col_stop = st.columns(2)
-        
-        with col_start:
-            start_cpu_clicked = st.button("🚀 Start CPU Test", disabled=st.session_state.cpu_running)
-        
-        with col_stop:
-            if st.button("🛑 Stop CPU Test", disabled=not st.session_state.cpu_running):
-                st.session_state.cpu_stop_requested = True
-        
-        if start_cpu_clicked:
+        if st.button("🚀 Start CPU Test", disabled=st.session_state.cpu_running):
             st.session_state.cpu_running = True
             st.session_state.cpu_progress = 0
             st.session_state.cpu_results = []
-            st.session_state.cpu_stop_requested = False
             
             # Create progress containers
             progress_bar = st.progress(0)
@@ -396,21 +248,12 @@ with tab1:
                 progress_bar.progress(progress)
                 status_text.text(f"Iteration {current}/{total} - Last: {exec_time:.2f}s")
             
-            def cpu_early_stop_check():
-                return st.session_state.cpu_stop_requested
-            
             # Run test in thread to avoid blocking UI
             with st.spinner("Running CPU stress test..."):
-                results = cpu_stress_test(cpu_iterations, cpu_matrix_size, cpu_progress_callback, cpu_early_stop_check)
+                results = cpu_stress_test(cpu_iterations, cpu_matrix_size, cpu_progress_callback)
                 st.session_state.cpu_results = results
                 st.session_state.cpu_running = False
-                
-                if st.session_state.cpu_stop_requested:
-                    st.warning(f"CPU test stopped early after {len(results)} iterations!")
-                else:
-                    st.success("CPU test completed!")
-                
-                st.session_state.cpu_stop_requested = False
+                st.success("CPU test completed!")
     
     with col2:
         st.subheader("Live Results")
@@ -434,132 +277,323 @@ with tab1:
             col3_stat.metric("Max Time", f"{max_time:.3f}s")
 
 # GPU Stress Test Tab
+# with tab2:
+#     st.header("GPU Stress Test (Matrix Multiplication)")
+#     st.markdown("This test uses large matrix multiplications to stress your GPU.")
+#     st.markdown("**Note:** Dont Change the Iterations value from Default Untill you are sure about it")
+    
+#     if not TORCH_AVAILABLE:
+#         st.error("❌ PyTorch not available. Please install PyTorch to enable GPU stress testing.")
+#         st.code("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128")
+#     elif not torch.cuda.is_available():
+#         st.error("❌ No GPU detected. GPU stress testing is not available.")
+#     else:
+#         col1, col2 = st.columns([1, 2])
+        
+#         with col1:
+#             st.subheader("Configuration")
+#             gpu_iterations = st.number_input("Number of Iterations", min_value=1, max_value=1000, value=1000, key="gpu_iter")
+            
+#             # Show estimated matrix size
+#             if TORCH_AVAILABLE and torch.cuda.is_available():
+#                 try:
+#                     device = torch.device("cuda")
+#                     total_memory = torch.cuda.get_device_properties(device).total_memory
+#                     matrix_size = int((total_memory * 0.8 / 4) ** 0.5)
+#                     st.info(f"Estimated matrix size: {matrix_size}×{matrix_size}")
+#                 except Exception as e:
+#                     st.warning(f"Could not calculate matrix size: {str(e)}")
+            
+#             if st.button("🚀 Start GPU Test", disabled=st.session_state.gpu_running):
+#                 st.session_state.gpu_running = True
+#                 st.session_state.gpu_progress = 0
+#                 st.session_state.gpu_results = []
+                
+#                 progress_bar = st.progress(0)
+#                 status_text = st.empty()
+#                 memory_text = st.empty()
+                
+#                 def gpu_progress_callback(current, total, exec_time, memory_mb):
+#                     progress = current / total
+#                     st.session_state.gpu_progress = progress
+#                     progress_bar.progress(progress)
+#                     status_text.text(f"Iteration {current}/{total} - Last: {exec_time:.4f}s")
+#                     memory_text.text(f"GPU Memory: {memory_mb:.1f} MB")
+                
+#                 with st.spinner("Running GPU stress test..."):
+#                     results, device_name = gpu_stress_test(gpu_iterations, gpu_progress_callback)
+#                     if results:
+#                         st.session_state.gpu_results = results
+#                         st.success(f"GPU test completed on {device_name}!")
+#                     else:
+#                         st.error("GPU test failed!")
+#                     st.session_state.gpu_running = False
+        
+#         with col2:
+#             st.subheader("Live Results")
+#             if st.session_state.gpu_results:
+#                 df = pd.DataFrame(st.session_state.gpu_results)
+                
+#                 # Performance chart
+#                 fig = px.line(df, x='iteration', y='time_seconds',
+#                              title='GPU Performance Over Time',
+#                              labels={'time_seconds': 'Execution Time (seconds)', 'iteration': 'Iteration'})
+#                 st.plotly_chart(fig, use_container_width=True)
+                
+#                 # Memory usage chart
+#                 fig_mem = px.line(df, x='iteration', y='memory_allocated_mb',
+#                                  title='GPU Memory Usage Over Time',
+#                                  labels={'memory_allocated_mb': 'Memory (MB)', 'iteration': 'Iteration'})
+#                 st.plotly_chart(fig_mem, use_container_width=True)
+                
+#                 # Statistics
+#                 avg_time = df['time_seconds'].mean()
+#                 avg_memory = df['memory_allocated_mb'].mean()
+                
+#                 col1_stat, col2_stat = st.columns(2)
+#                 col1_stat.metric("Avg Execution Time", f"{avg_time:.6f}s")
+#                 col2_stat.metric("Avg Memory Usage", f"{avg_memory:.1f} MB")
+
+def gpu_stress_test_universal(iterations, progress_callback=None):
+    """
+    Universal GPU stress test that works with CUDA, MPS, and CPU
+    """
+    import torch
+    import time
+    import gc
+    
+    results = []
+    
+    try:
+        # Determine the best available device
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            device_name = torch.cuda.get_device_name(0)
+            supports_memory_stats = True
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = torch.device("mps")
+            device_name = "Apple Silicon GPU (MPS)"
+            supports_memory_stats = False  # MPS doesn't support memory stats yet
+        else:
+            device = torch.device("cpu")
+            device_name = "CPU"
+            supports_memory_stats = False
+        
+        # Determine matrix size based on device
+        if device.type == "cuda":
+            try:
+                total_memory = torch.cuda.get_device_properties(device).total_memory
+                matrix_size = int((total_memory * 0.6 / 4) ** 0.5)  # More conservative
+                matrix_size = min(matrix_size, 8192)  # Cap at 8192
+            except:
+                matrix_size = 4096
+        elif device.type == "mps":
+            matrix_size = 4096  # Conservative for MPS
+        else:  # CPU
+            matrix_size = 1024  # Much smaller for CPU
+        
+        print(f"Using device: {device}, Matrix size: {matrix_size}x{matrix_size}")
+        
+        for i in range(iterations):
+            # Clear cache before each iteration
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            elif device.type == "mps":
+                torch.mps.empty_cache()
+            
+            gc.collect()
+            
+            start_time = time.time()
+            
+            # Create random matrices
+            try:
+                a = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float32)
+                b = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float32)
+                
+                # Perform matrix multiplication
+                c = torch.matmul(a, b)
+                
+                # Ensure computation is complete
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                elif device.type == "mps":
+                    torch.mps.synchronize()
+                
+                end_time = time.time()
+                execution_time = end_time - start_time
+                
+                # Get memory usage if supported
+                memory_mb = 0
+                if supports_memory_stats and device.type == "cuda":
+                    try:
+                        memory_mb = torch.cuda.memory_allocated(device) / 1024 / 1024
+                    except:
+                        memory_mb = 0
+                
+                results.append({
+                    'iteration': i + 1,
+                    'time_seconds': execution_time,
+                    'memory_allocated_mb': memory_mb,
+                    'matrix_size': matrix_size
+                })
+                
+                # Clean up
+                del a, b, c
+                
+                if progress_callback:
+                    progress_callback(i + 1, iterations, execution_time, memory_mb)
+                    
+            except Exception as e:
+                print(f"Error in iteration {i + 1}: {str(e)}")
+                # Try with smaller matrix size
+                matrix_size = int(matrix_size * 0.8)
+                if matrix_size < 512:
+                    break
+                continue
+        
+        return results, device_name
+        
+    except Exception as e:
+        print(f"GPU stress test failed: {str(e)}")
+        return None, None
+
 with tab2:
     st.header("GPU Stress Test (Matrix Multiplication)")
     st.markdown("This test uses large matrix multiplications to stress your GPU.")
+    st.markdown("**Note:** Don't Change the Iterations value from Default Until you are sure about it")
     
     if not TORCH_AVAILABLE:
         st.error("❌ PyTorch not available. Please install PyTorch to enable GPU stress testing.")
-        st.code("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128")
-    elif not torch.cuda.is_available():
-        st.error("❌ No GPU detected. GPU stress testing is not available.")
+        st.code("pip install torch torchvision torchaudio")
     else:
-        # Warning box
-        st.markdown("""
-        <div class="warning-box">
-            ⚠️ <strong>GPU Warning:</strong> High iteration counts can stress your GPU significantly. 
-            Monitor temperatures and use the stop button if needed. Lightweight mode is recommended for >1000 iterations.
-        </div>
-        """, unsafe_allow_html=True)
+        # Check for available GPU backends
+        gpu_available = False
+        device_type = None
+        device_name = "Unknown"
         
-        col1, col2 = st.columns([1, 2])
+        if torch.cuda.is_available():
+            gpu_available = True
+            device_type = "cuda"
+            device_name = torch.cuda.get_device_name(0)
+            st.success(f"✅ NVIDIA GPU detected: {device_name}")
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            gpu_available = True
+            device_type = "mps"
+            device_name = "Apple Silicon GPU (MPS)"
+            st.success(f"✅ Apple Silicon GPU detected: {device_name}")
+        else:
+            st.error("❌ No GPU detected. GPU stress testing will run on CPU (not recommended).")
+            st.info("💡 For Apple Silicon Macs, ensure you have PyTorch with MPS support installed.")
         
-        with col1:
-            st.subheader("Configuration")
-            gpu_iterations = st.number_input("Number of Iterations", min_value=1, max_value=10000, value=100, key="gpu_iter")
+        if gpu_available or st.checkbox("Run on CPU (slower)", help="Check this to run the test on CPU"):
+            col1, col2 = st.columns([1, 2])
             
-            # Test mode selection
-            test_mode = st.selectbox(
-                "Test Mode",
-                ["Standard (Full Memory)", "Lightweight (High Iterations)"],
-                help="Standard: Uses more GPU memory, better for stress testing. Lightweight: Uses less memory, better for high iteration counts."
-            )
-            
-            # Show estimated matrix size and time
-            if TORCH_AVAILABLE and torch.cuda.is_available():
+            with col1:
+                st.subheader("Configuration")
+                
+                # Adjust default iterations based on device
+                if device_type == "mps":
+                    default_iterations = 500  # Lower default for MPS
+                    max_iterations = 1000
+                elif device_type == "cuda":
+                    default_iterations = 1000
+                    max_iterations = 2000
+                else:  # CPU
+                    default_iterations = 10
+                    max_iterations = 100
+                
+                gpu_iterations = st.number_input(
+                    "Number of Iterations", 
+                    min_value=1, 
+                    max_value=max_iterations, 
+                    value=default_iterations, 
+                    key="gpu_iter"
+                )
+                
+                # Show estimated matrix size
                 try:
-                    device = torch.device("cuda")
-                    total_memory = torch.cuda.get_device_properties(device).total_memory
-                    if test_mode == "Standard (Full Memory)":
-                        matrix_size = int((total_memory * 0.6 / 4) ** 0.5)
-                        matrix_size = min(matrix_size, 8192)
-                        matrix_size = max(matrix_size, 1024)
-                        est_time = gpu_iterations * 0.01
-                    else:
-                        matrix_size = 2048
-                        est_time = gpu_iterations * 0.001
-                    
-                    st.info(f"Matrix size: {matrix_size}×{matrix_size}")
-                    st.info(f"Estimated time: ~{est_time:.1f}s")
+                    if device_type == "cuda":
+                        device = torch.device("cuda")
+                        total_memory = torch.cuda.get_device_properties(device).total_memory
+                        matrix_size = int((total_memory * 0.8 / 4) ** 0.5)
+                        st.info(f"Estimated matrix size: {matrix_size}×{matrix_size}")
+                    elif device_type == "mps":
+                        # For MPS, we use a conservative estimate since we can't query memory directly
+                        # Apple Silicon typically has unified memory
+                        matrix_size = 4096  # Conservative estimate
+                        st.info(f"Estimated matrix size: {matrix_size}×{matrix_size}")
+                        st.warning("⚠️ MPS memory usage estimation is approximate")
+                    else:  # CPU
+                        matrix_size = 1024  # Much smaller for CPU
+                        st.info(f"CPU matrix size: {matrix_size}×{matrix_size}")
                 except Exception as e:
-                    st.warning(f"Could not calculate estimates: {str(e)}")
-            
-            # Control buttons
-            col_start, col_stop = st.columns(2)
-            
-            with col_start:
-                start_gpu_clicked = st.button("🚀 Start GPU Test", disabled=st.session_state.gpu_running)
-            
-            with col_stop:
-                if st.button("🛑 Stop GPU Test", disabled=not st.session_state.gpu_running):
-                    st.session_state.gpu_stop_requested = True
-            
-            if start_gpu_clicked:
-                st.session_state.gpu_running = True
-                st.session_state.gpu_progress = 0
-                st.session_state.gpu_results = []
-                st.session_state.gpu_stop_requested = False
+                    st.warning(f"Could not calculate matrix size: {str(e)}")
                 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                memory_text = st.empty()
-                
-                def gpu_progress_callback(current, total, exec_time, memory_mb):
-                    progress = current / total
-                    st.session_state.gpu_progress = progress
-                    progress_bar.progress(progress)
-                    status_text.text(f"Iteration {current}/{total} - Last: {exec_time:.4f}s")
-                    memory_text.text(f"GPU Memory: {memory_mb:.1f} MB")
-                
-                def gpu_early_stop_check():
-                    return st.session_state.gpu_stop_requested
-                
-                with st.spinner("Running GPU stress test..."):
-                    if test_mode == "Lightweight (High Iterations)":
-                        results, device_name = gpu_stress_test_lightweight(
-                            gpu_iterations, gpu_progress_callback, gpu_early_stop_check
-                        )
-                    else:
-                        results, device_name = gpu_stress_test(
-                            gpu_iterations, gpu_progress_callback, gpu_early_stop_check
-                        )
+                if st.button("🚀 Start GPU Test", disabled=st.session_state.get('gpu_running', False)):
+                    st.session_state.gpu_running = True
+                    st.session_state.gpu_progress = 0
+                    st.session_state.gpu_results = []
                     
-                    if results:
-                        st.session_state.gpu_results = results
-                        if st.session_state.gpu_stop_requested:
-                            st.warning(f"GPU test stopped early after {len(results)} iterations on {device_name}")
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    memory_text = st.empty()
+                    
+                    def gpu_progress_callback(current, total, exec_time, memory_mb):
+                        progress = current / total
+                        st.session_state.gpu_progress = progress
+                        progress_bar.progress(progress)
+                        status_text.text(f"Iteration {current}/{total} - Last: {exec_time:.4f}s")
+                        if memory_mb > 0:
+                            memory_text.text(f"GPU Memory: {memory_mb:.1f} MB")
                         else:
-                            st.success(f"GPU test completed on {device_name}!")
-                    else:
-                        st.error(f"GPU test failed: {device_name}")
+                            memory_text.text("Memory usage: Not available")
                     
-                    st.session_state.gpu_running = False
-                    st.session_state.gpu_stop_requested = False
-        
-        with col2:
-            st.subheader("Live Results")
-            if st.session_state.gpu_results:
-                df = pd.DataFrame(st.session_state.gpu_results)
-                
-                # Performance chart
-                fig = px.line(df, x='iteration', y='time_seconds',
-                             title='GPU Performance Over Time',
-                             labels={'time_seconds': 'Execution Time (seconds)', 'iteration': 'Iteration'})
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Memory usage chart
-                fig_mem = px.line(df, x='iteration', y='memory_allocated_mb',
-                                 title='GPU Memory Usage Over Time',
-                                 labels={'memory_allocated_mb': 'Memory (MB)', 'iteration': 'Iteration'})
-                st.plotly_chart(fig_mem, use_container_width=True)
-                
-                # Statistics
-                avg_time = df['time_seconds'].mean()
-                avg_memory = df['memory_allocated_mb'].mean()
-                
-                col1_stat, col2_stat = st.columns(2)
-                col1_stat.metric("Avg Execution Time", f"{avg_time:.6f}s")
-                col2_stat.metric("Avg Memory Usage", f"{avg_memory:.1f} MB")
+                    with st.spinner(f"Running GPU stress test on {device_name}..."):
+                        results, final_device_name = gpu_stress_test_universal(gpu_iterations, gpu_progress_callback)
+                        if results:
+                            st.session_state.gpu_results = results
+                            st.success(f"GPU test completed on {final_device_name}!")
+                        else:
+                            st.error("GPU test failed!")
+                        st.session_state.gpu_running = False
+            
+            with col2:
+                st.subheader("Live Results")
+                if st.session_state.get('gpu_results', []):
+                    df = pd.DataFrame(st.session_state.gpu_results)
+                    
+                    # Performance chart
+                    fig = px.line(df, x='iteration', y='time_seconds',
+                                 title='GPU Performance Over Time',
+                                 labels={'time_seconds': 'Execution Time (seconds)', 'iteration': 'Iteration'})
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Memory usage chart (only if memory data is available)
+                    if 'memory_allocated_mb' in df.columns and df['memory_allocated_mb'].max() > 0:
+                        fig_mem = px.line(df, x='iteration', y='memory_allocated_mb',
+                                         title='GPU Memory Usage Over Time',
+                                         labels={'memory_allocated_mb': 'Memory (MB)', 'iteration': 'Iteration'})
+                        st.plotly_chart(fig_mem, use_container_width=True)
+                    
+                    # Statistics
+                    avg_time = df['time_seconds'].mean()
+                    min_time = df['time_seconds'].min()
+                    max_time = df['time_seconds'].max()
+                    
+                    col1_stat, col2_stat, col3_stat = st.columns(3)
+                    col1_stat.metric("Avg Execution Time", f"{avg_time:.6f}s")
+                    col2_stat.metric("Min Time", f"{min_time:.6f}s")
+                    col3_stat.metric("Max Time", f"{max_time:.6f}s")
+                    
+                    if 'memory_allocated_mb' in df.columns and df['memory_allocated_mb'].max() > 0:
+                        avg_memory = df['memory_allocated_mb'].mean()
+                        max_memory = df['memory_allocated_mb'].max()
+                        
+                        col1_mem, col2_mem = st.columns(2)
+                        col1_mem.metric("Avg Memory Usage", f"{avg_memory:.1f} MB")
+                        col2_mem.metric("Peak Memory Usage", f"{max_memory:.1f} MB")
+
+
 
 # Results & Analytics Tab
 with tab3:
@@ -572,13 +606,6 @@ with tab3:
         if st.session_state.cpu_results:
             df_cpu = pd.DataFrame(st.session_state.cpu_results)
             st.dataframe(df_cpu)
-            
-            # Additional CPU statistics
-            st.write("**Performance Statistics:**")
-            st.write(f"- Total Iterations: {len(df_cpu)}")
-            st.write(f"- Average Time: {df_cpu['time_seconds'].mean():.3f}s")
-            st.write(f"- Standard Deviation: {df_cpu['time_seconds'].std():.3f}s")
-            st.write(f"- Total Test Time: {df_cpu['time_seconds'].sum():.1f}s")
             
             # Download button for CPU results
             csv_cpu = df_cpu.to_csv(index=False)
@@ -596,14 +623,6 @@ with tab3:
         if st.session_state.gpu_results:
             df_gpu = pd.DataFrame(st.session_state.gpu_results)
             st.dataframe(df_gpu)
-            
-            # Additional GPU statistics
-            st.write("**Performance Statistics:**")
-            st.write(f"- Total Iterations: {len(df_gpu)}")
-            st.write(f"- Average Time: {df_gpu['time_seconds'].mean():.6f}s")
-            st.write(f"- Matrix Size: {df_gpu['matrix_size'].iloc[0]}×{df_gpu['matrix_size'].iloc[0]}")
-            st.write(f"- Peak Memory: {df_gpu['memory_allocated_mb'].max():.1f} MB")
-            st.write(f"- Total Test Time: {df_gpu['time_seconds'].sum():.1f}s")
             
             # Download button for GPU results
             csv_gpu = df_gpu.to_csv(index=False)
@@ -623,82 +642,19 @@ with tab3:
         df_cpu = pd.DataFrame(st.session_state.cpu_results)
         df_gpu = pd.DataFrame(st.session_state.gpu_results)
         
-        col1_comp, col2_comp, col3_comp, col4_comp = st.columns(4)
+        col1_comp, col2_comp = st.columns(2)
         
         with col1_comp:
             st.metric("CPU Avg Time", f"{df_cpu['time_seconds'].mean():.3f}s")
-            
-        with col2_comp:
             st.metric("CPU Total Iterations", len(df_cpu))
             
-        with col3_comp:
+        with col2_comp:
             st.metric("GPU Avg Time", f"{df_gpu['time_seconds'].mean():.6f}s")
-            
-        with col4_comp:
             st.metric("GPU Total Iterations", len(df_gpu))
-        
-        # Performance comparison chart
-        if len(df_cpu) > 0 and len(df_gpu) > 0:
-            st.subheader("Performance Comparison")
-            
-            # Normalize iteration counts for comparison
-            cpu_normalized = df_cpu.copy()
-            gpu_normalized = df_gpu.copy()
-            
-            # Create comparison chart
-            fig_comp = go.Figure()
-            
-            fig_comp.add_trace(go.Scatter(
-                x=cpu_normalized['iteration'],
-                y=cpu_normalized['time_seconds'],
-                mode='lines+markers',
-                name='CPU',
-                line=dict(color='blue')
-            ))
-            
-            fig_comp.add_trace(go.Scatter(
-                x=gpu_normalized['iteration'],
-                y=gpu_normalized['time_seconds'],
-                mode='lines+markers',
-                name='GPU',
-                line=dict(color='red'),
-                yaxis='y2'
-            ))
-            
-            fig_comp.update_layout(
-                title='CPU vs GPU Performance Comparison',
-                xaxis_title='Iteration',
-                yaxis=dict(title='CPU Time (seconds)', side='left', color='blue'),
-                yaxis2=dict(title='GPU Time (seconds)', side='right', overlaying='y', color='red'),
-                legend=dict(x=0.7, y=1)
-            )
-            
-            st.plotly_chart(fig_comp, use_container_width=True)
 
 # Footer
 st.markdown("---")
 st.markdown("**System Stress Test Dashboard** - Monitor your hardware performance in real-time")
-st.markdown("**Version 2.0** - Optimized for better performance and user control")
-
-# Performance tips in sidebar
-st.sidebar.markdown("---")
-st.sidebar.subheader("💡 Performance Tips")
-st.sidebar.markdown("""
-**CPU Testing:**
-- Start with 10 iterations
-- Matrix size 1000-2000 for quick tests
-- Use higher values for stress testing
-
-**GPU Testing:**
-- Standard mode: 100-1000 iterations
-- Lightweight mode: 1000+ iterations
-- Monitor GPU temperature during tests
-
-**General:**
-- Use stop buttons for long tests
-- Close other applications for accuracy
-- Save results before running new tests
-""")
 
 # Auto-refresh for live updates (commented out to avoid constant rerunning)
 # if st.session_state.cpu_running or st.session_state.gpu_running:
